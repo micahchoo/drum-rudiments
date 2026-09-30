@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--head-->
+<meta name="theme-color" content="#0b0d10">
+<link rel="icon" href="/drum-rudiments/favicon.svg" type="image/svg+xml">
+</head>
+<body>
+<div class="app">
+<header>
+  <div class="picker">
+    <h1 class="rudTitle"><button id="rudBtn" class="rudBtn" aria-haspopup="dialog" aria-expanded="false"><span id="rudNum"></span><span id="rudName">Drum Rudiments Trainer</span><i></i></button></h1>
+    <div id="rudMenu" class="rudMenu" role="dialog" aria-label="Choose a rudiment"></div>
+  </div>
+  <div class="seg" role="radiogroup" aria-label="Mode">
+    <button id="mWatch" role="radio" aria-checked="true" class="on">Watch</button>
+    <button id="mPlay" role="radio" aria-checked="false">Play</button>
+  </div>
+  <div class="spacer"></div>
+  <div class="tempo">
+    <button class="icon" id="slower" title="Slower (↓, Shift for 1)" aria-label="Slower">−</button>
+    <label class="num"><input id="bpmNum" type="number" min="10" max="240" aria-label="Tempo in beats per minute"><span>bpm</span></label>
+    <button class="icon" id="faster" title="Faster (↑, Shift for 1)" aria-label="Faster">+</button>
+    <input id="bpm" type="range" min="10" max="240" aria-label="Tempo">
+  </div>
+  <button id="play" title="Play / stop (P)" aria-label="Play"></button>
+  <div class="spacer"></div>
+  <button class="icon on" id="metro" title="Metronome" aria-pressed="true" aria-label="Metronome"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 14 7 2h2l2 12z"/><path d="M8 10l4-6"/></svg></button>
+  <button class="icon on" id="sound" title="Pad sound" aria-pressed="true" aria-label="Pad sound"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 6h3l4-3v10L5 10H2z"/><path d="M11.5 5.5a3.5 3.5 0 0 1 0 5"/></svg></button>
+  <button class="icon" id="micBtn" title="Microphone" aria-label="Microphone" aria-expanded="false"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5.5" y="1.5" width="5" height="8" rx="2.5"/><path d="M3 8a5 5 0 0 0 10 0M8 13v2"/></svg></button>
+</header>
+
+<div id="micPop" class="pop" role="dialog" aria-label="Microphone">
+  <div class="row"><span>Microphone</span><button class="txt" id="micOn">Enable</button></div>
+  <div class="row"><span>Sensitivity</span><input id="sens" type="range" min="0" max="100" value="50" aria-label="Sensitivity"></div>
+  <div class="meter" aria-hidden="true"><i id="lvl"></i><b id="thMark"></b></div>
+  <div class="row"><span id="latTxt">Latency not calibrated</span><button class="txt" id="cal" disabled>Calibrate</button></div>
+  <p>Wear headphones: the mic scores anything it hears, the click too. It hears when and how loud — never which hand. No mic? Space taps along.</p>
+</div>
+
+<main id="stage">
+  <canvas id="gl" aria-hidden="true"></canvas>
+  <section class="staff" aria-label="Notation"><canvas id="staff"></canvas></section>
+  <section class="view" id="vSide" aria-label="Side view"><span class="tag">Side</span></section>
+  <section class="laneCell" aria-label="Note lane">
+    <canvas id="lane"></canvas>
+    <button id="pill" class="pill" aria-expanded="false" title="Score details"><b id="score">0</b><span>×<b id="combo">0</b></span><b id="acc">–</b></button>
+    <dl id="details" class="details">
+      <dt>Perfect · good · ok</dt><dd id="pgo">0 · 0 · 0</dd>
+      <dt>Missed · extra</dt><dd id="miss">0 · 0</dd>
+      <dt>Average offset</dt><dd id="off">–</dd>
+      <dt>Spread</dt><dd id="sd">–</dd>
+      <dt>Accent over tap</dt><dd id="gap">–</dd>
+      <dt>Flam spread · flat</dt><dd id="flam">– · 0</dd>
+    </dl>
+  </section>
+  <section class="view" id="vFront" aria-label="Your view"><span class="tag">Your view</span></section>
+</main>
+</div>
+<noscript><p class="about">This trainer draws the hands, the lane and the notation with JavaScript. Turn it on to play along; the text below works without it.</p></noscript>
+<article id="about" class="about"><!--about--></article>
+<div id="toast" class="toast" role="status"></div>
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>

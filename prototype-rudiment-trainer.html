@@ -1,0 +1,571 @@
+<!doctype html>
+<!--
+  PROTOTYPE — throwaway. Question: while playing at tempo, does the player's eye
+  follow a falling-note LANE (A) or a pair of animated HANDS (B)?
+  Two variants on one page, switchable via ?variant=A|B and the bottom bar (or ← →).
+  Run:  python3 -m http.server 8765   then open  http://localhost:8765/prototype-rudiment-trainer.html
+  (the mic needs localhost or https; file:// will not do)
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rudiment Trainer — prototype</title>
+<style>
+  :root {
+    --bg:#14161a; --panel:#1c1f25; --panel2:#252932; --ink:#e8e6e1; --dim:#8a8f98;
+    --R:#f08a4b; --L:#4ba3f0; --perfect:#5fd08a; --good:#b8d85a; --ok:#e8c547; --bad:#e8584b; --pad:#3a3f48;
+  }
+  * { box-sizing:border-box }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--ink); font:14px/1.4 system-ui,sans-serif }
+  body { display:flex; flex-direction:column; overflow:hidden }
+  header { display:flex; flex-wrap:wrap; gap:14px; align-items:center; padding:10px 14px; background:var(--panel); border-bottom:1px solid #000 }
+  header label { display:flex; gap:6px; align-items:center; color:var(--dim) }
+  header select, header button, header input[type=number] { background:var(--panel2); color:var(--ink); border:1px solid #3a3f48; border-radius:6px; padding:5px 9px; font:inherit }
+  header button { cursor:pointer }
+  header button.on { background:#2e5a3c; border-color:var(--perfect) }
+  #play { min-width:80px; font-weight:600 }
+  #bpmNum { width:60px }
+  .meter { width:90px; height:10px; background:#000; border-radius:5px; position:relative; overflow:hidden }
+  .meter i { position:absolute; left:0; top:0; bottom:0; background:var(--perfect); width:0 }
+  .meter b { position:absolute; top:-2px; bottom:-2px; width:2px; background:var(--bad) }
+  .hint { color:var(--dim); font-size:12px }
+
+  #stage { flex:1; display:grid; gap:10px; padding:10px 10px 64px; min-height:0 }
+  .cell { position:relative; background:var(--panel); border-radius:10px; min-height:0; min-width:0; overflow:hidden }
+  .cell canvas { position:absolute; inset:0; width:100%; height:100%; display:block }
+  #laneCell{grid-area:lane} #sideCell{grid-area:side} #frontCell{grid-area:front} #stripCell{grid-area:strip} #hud{grid-area:hud}
+
+  /* A — the lane leads; hands are small references */
+  .vA { grid-template-columns:minmax(200px,1fr) minmax(300px,440px) minmax(260px,1fr); grid-template-rows:1fr 1fr;
+        grid-template-areas:"hud lane side" "hud lane front" }
+  .vA #stripCell { display:none }
+  /* B — the hands lead; notation strip tells you where you are */
+  .vB { grid-template-columns:1fr 1fr 230px; grid-template-rows:1fr 160px;
+        grid-template-areas:"side front hud" "strip strip hud" }
+  .vB #laneCell { display:none }
+
+  #hud { background:var(--panel); border-radius:10px; padding:14px 16px; overflow:auto }
+  #hud .big { font-size:34px; font-weight:700; font-variant-numeric:tabular-nums }
+  #hud dl { display:grid; grid-template-columns:auto auto; gap:4px 12px; margin:10px 0 0 }
+  #hud dt { color:var(--dim) } #hud dd { margin:0; text-align:right; font-variant-numeric:tabular-nums }
+  #hud h3 { margin:16px 0 4px; font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim) }
+  #hud p { margin:4px 0; color:var(--dim); font-size:12px }
+
+  #switcher { position:fixed; left:50%; bottom:12px; transform:translateX(-50%); display:flex; align-items:center; gap:4px;
+              background:#f4f1e8; color:#111; border-radius:999px; padding:4px; box-shadow:0 6px 20px rgba(0,0,0,.5); z-index:10; font-weight:600 }
+  #switcher button { border:0; background:transparent; font-size:18px; width:34px; height:34px; border-radius:50%; cursor:pointer }
+  #switcher button:hover { background:#ddd8c8 }
+  #switcher span { padding:0 10px; min-width:170px; text-align:center }
+</style>
+</head>
+<body>
+<header>
+  <label>Rudiment <select id="rud"></select></label>
+  <button id="play">▶ Play</button>
+  <label>Tempo <input id="bpm" type="range" min="40" max="200" value="80"><input id="bpmNum" type="number" min="40" max="200" value="80"> bpm</label>
+  <button id="metro" class="on">Metronome</button>
+  <button id="demo" class="on">Demo pad sound</button>
+  <button id="mic">🎤 Enable mic</button>
+  <button id="cal" disabled>Calibrate</button>
+  <label>Sensitivity <input id="sens" type="range" min="0" max="100" value="50"></label>
+  <div class="meter" title="mic level / threshold"><i id="lvl"></i><b id="thMark"></b></div>
+  <span class="hint" id="status">Space = tap along (timing only) · P = play/stop · headphones stop the click reaching the mic</span>
+</header>
+
+<main id="stage" class="vA">
+  <section id="hud">
+    <div class="big" id="score">0</div>
+    <div style="color:var(--dim)">score · combo <b id="combo">0</b> (best <span id="best">0</span>)</div>
+    <dl>
+      <dt>Accuracy</dt><dd id="acc">–</dd>
+      <dt>Perfect / good / ok</dt><dd id="pgo">0 / 0 / 0</dd>
+      <dt>Missed</dt><dd id="miss">0</dd>
+      <dt>Extra hits</dt><dd id="extra">0</dd>
+      <dt>Avg offset</dt><dd id="off">–</dd>
+      <dt>Spread (σ)</dt><dd id="sd">–</dd>
+    </dl>
+    <h3>Dynamics (mic only)</h3>
+    <dl>
+      <dt>Accent over tap</dt><dd id="gap">–</dd>
+      <dt>Flam spread</dt><dd id="flam">–</dd>
+      <dt>Flat flams</dt><dd id="flat">0</dd>
+    </dl>
+    <h3>Mic latency</h3>
+    <p id="latTxt">not calibrated (0 ms)</p>
+    <p>Windows: perfect ±25 ms · good ±50 · ok ±100.<br>Sticking is on trust: nothing checks which hand hit.</p>
+  </section>
+  <div class="cell" id="laneCell"><canvas id="lane"></canvas></div>
+  <div class="cell" id="sideCell"><canvas id="side"></canvas></div>
+  <div class="cell" id="frontCell"><canvas id="front"></canvas></div>
+  <div class="cell" id="stripCell"><canvas id="strip"></canvas></div>
+</main>
+
+<div id="switcher"><button id="prevV" title="previous variant (←)">‹</button><span id="vLabel"></span><button id="nextV" title="next variant (→)">›</button></div>
+
+<script>
+// ───────────────────────── rudiments as data ─────────────────────────
+// One token per slot. ">" = accent. Two letters = grace note then main note ("lR" = flam: grace L, main R). "-" = rest.
+function parse(str, perBeat) {
+  const toks = str.trim().split(/\s+/), notes = [];
+  toks.forEach((tok, i) => {
+    if (tok === '-') return;
+    const t = i / perBeat; let acc = false;
+    if (tok[0] === '>') { acc = true; tok = tok.slice(1); }
+    if (tok.length === 2) { notes.push({ t, hand: tok[0].toUpperCase(), grace: true, acc: false }); tok = tok[1]; }
+    notes.push({ t, hand: tok, grace: false, acc });
+  });
+  return { notes, beats: toks.length / perBeat, perBeat, text: str };
+}
+const RUDIMENTS = {
+  single:     { name: '1. Single Stroke Roll',      ...parse('R L R L R L R L', 4) },
+  double:     { name: '6. Double Stroke Open Roll', ...parse('R R L L R R L L', 4) },
+  paradiddle: { name: '16. Single Paradiddle',      ...parse('>R L R R >L R L L', 4) },
+  accent:     { name: 'Accented singles',           ...parse('>R L R L >R L R L', 4) },
+  flam:       { name: '20. Flam',                   ...parse('lR rL lR rL', 2) },
+  flamAccent: { name: '22. Flam Accent',            ...parse('>lR L R >rL R L', 3) },
+};
+
+// ───────────────────────── state ─────────────────────────
+const $ = s => document.querySelector(s);
+const HAND = { R: '#f08a4b', L: '#4ba3f0' };
+const JC = { perfect: '#5fd08a', good: '#b8d85a', ok: '#e8c547', miss: '#e8584b' };
+let rud = RUDIMENTS.single, bpm = 80, spb = 60 / bpm;
+let ac = null, outLat = 0, playing = false, T0 = 0, nextN = 0, nextClick = -4, schedTimer = null;
+let viewRel = -1;               // seconds since beat 0 that the screen is showing
+let latency = 0;                // mic round trip, s
+let judgeFrom = 0, S, lastJudge = null, cal = null, noise = null;
+const judged = new Map();       // n -> {res, err, accOK}
+const graceHit = new Map();     // n -> corrected hit time of a grace note
+let metroOn = true, demoOn = true, micNode = null, threshold = 0.09;
+
+const graceSec = () => Math.min(0.035, spb / rud.perBeat * 0.35);
+function ev(n) {
+  const len = rud.notes.length, c = Math.floor(n / len), note = rud.notes[((n % len) + len) % len];
+  const beat = c * rud.beats + note.t;
+  return { n, note, beat, rel: beat * spb - (note.grace ? graceSec() : 0) };
+}
+const evTime = n => T0 + ev(n).rel;
+const median = a => { if (!a.length) return NaN; const s = [...a].sort((x, y) => x - y), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+
+function resetStats() {
+  S = { score: 0, combo: 0, best: 0, perfect: 0, good: 0, ok: 0, miss: 0, extra: 0, errs: [], accPeaks: [], tapPeaks: [], flams: [], flat: 0 };
+  judged.clear(); graceHit.clear(); judgeFrom = 0; lastJudge = null; renderHud();
+}
+
+// ───────────────────────── audio ─────────────────────────
+function ensureAudio() {
+  if (ac) return;
+  ac = new AudioContext({ latencyHint: 'interactive' });
+  outLat = (ac.outputLatency || 0) + (ac.baseLatency || 0);
+  noise = ac.createBuffer(1, ac.sampleRate * 0.1, ac.sampleRate);
+  const d = noise.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / d.length, 6);
+}
+function click(t, strong) {
+  const o = ac.createOscillator(), g = ac.createGain();
+  o.frequency.value = strong ? 1600 : 1100; o.connect(g); g.connect(ac.destination);
+  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(strong ? 0.35 : 0.2, t + 0.002); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.04);
+  o.start(t); o.stop(t + 0.05);
+}
+function padSound(t, note) {
+  const s = ac.createBufferSource(), f = ac.createBiquadFilter(), g = ac.createGain();
+  s.buffer = noise; f.type = 'bandpass'; f.frequency.value = 2400; f.Q.value = 0.8;
+  g.gain.value = note.acc ? 1.2 : note.grace ? 0.12 : 0.35;
+  s.connect(f); f.connect(g); g.connect(ac.destination); s.start(t);
+}
+function schedule() {
+  const horizon = ac.currentTime + 0.12;
+  while (T0 + nextClick * spb < horizon) {
+    if (metroOn || nextClick < 0) click(T0 + nextClick * spb, ((nextClick % 4) + 4) % 4 === 0);
+    nextClick++;
+  }
+  while (evTime(nextN) < horizon) {
+    if (demoOn) padSound(evTime(nextN), ev(nextN).note);
+    nextN++;
+  }
+}
+function start() {
+  ensureAudio(); ac.resume(); resetStats();
+  T0 = ac.currentTime + 0.1 + 4 * spb; nextN = 0; nextClick = -4; playing = true;
+  schedTimer = setInterval(schedule, 25); schedule();
+  $('#play').textContent = '■ Stop'; $('#play').classList.add('on');
+}
+function stop() {
+  playing = false; clearInterval(schedTimer);
+  $('#play').textContent = '▶ Play'; $('#play').classList.remove('on');
+}
+function setBpm(v) {
+  v = Math.max(40, Math.min(200, +v || 80));
+  if (playing) { const beatNow = (ac.currentTime - T0) / spb; spb = 60 / v; T0 = ac.currentTime - beatNow * spb; }
+  else spb = 60 / v;
+  bpm = v; $('#bpm').value = v; $('#bpmNum').value = v;
+}
+
+// ───────────────────────── mic onset detection ─────────────────────────
+const WORKLET = `
+class Onset extends AudioWorkletProcessor {
+  constructor() { super(); this.th = 0.09; this.floor = 0.001; this.last = -1; this.collect = 0; this.peak = 0; this.trig = 0; this.lvl = 0; this.blocks = 0;
+    this.port.onmessage = e => { if (e.data.th != null) this.th = e.data.th; }; }
+  process(inputs) {
+    const ch = inputs[0] && inputs[0][0]; if (!ch) return true;
+    for (let i = 0; i < ch.length; i++) {
+      const a = Math.abs(ch[i]), t = currentTime + i / sampleRate;
+      this.floor += (a - this.floor) * 0.0005;
+      if (a > this.lvl) this.lvl = a;
+      if (this.collect > 0) {
+        if (a > this.peak) this.peak = a;
+        if (--this.collect === 0) this.port.postMessage({ t: this.trig, peak: this.peak });
+      } else if (a > this.th && a > this.floor * 6 && t - this.last > 0.012) {
+        this.trig = t; this.last = t; this.peak = a; this.collect = Math.round(sampleRate * 0.006);
+      }
+    }
+    if (++this.blocks % 6 === 0) { this.port.postMessage({ lvl: this.lvl }); this.lvl = 0; }
+    return true;
+  }
+}
+registerProcessor('onset', Onset);`;
+
+async function enableMic() {
+  ensureAudio(); await ac.resume();
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+  await ac.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: 'application/javascript' })));
+  const src = ac.createMediaStreamSource(stream);
+  micNode = new AudioWorkletNode(ac, 'onset');
+  const sink = ac.createGain(); sink.gain.value = 0;
+  src.connect(micNode); micNode.connect(sink); sink.connect(ac.destination);
+  micNode.port.onmessage = e => {
+    if (e.data.lvl != null) { $('#lvl').style.width = Math.min(100, Math.sqrt(e.data.lvl) * 100) + '%'; return; }
+    onMicHit(e.data.t, e.data.peak);
+  };
+  setSens($('#sens').value);
+  $('#mic').textContent = '🎤 Mic on'; $('#mic').classList.add('on'); $('#cal').disabled = false;
+  demoOn = false; $('#demo').classList.remove('on');
+  status('Mic on. Demo pad sound muted so the mic hears only you. Calibrate once before scoring.');
+}
+function setSens(v) {
+  threshold = 0.005 * Math.pow(10, (100 - v) / 40);   // right = more sensitive
+  $('#thMark').style.left = Math.min(100, Math.sqrt(threshold) * 100) + '%';
+  if (micNode) micNode.port.postMessage({ th: threshold });
+}
+function status(s) { $('#status').textContent = s; }
+
+// Calibration: 12 clicks; the median of (hit − click) is the whole round trip.
+function calibrate() {
+  if (playing) stop();
+  ensureAudio();
+  const t0 = ac.currentTime + 0.5, times = [];
+  for (let i = 0; i < 12; i++) { times.push(t0 + i * 0.6); click(t0 + i * 0.6, i % 4 === 0); }
+  cal = { times, diffs: [] };
+  status('Calibrating: hit the pad WITH each click (skip the first four)…');
+  setTimeout(() => {
+    const d = cal.diffs; cal = null;
+    if (d.length < 4) { status(`Calibration failed: heard ${d.length} hits. Raise sensitivity and try again.`); return; }
+    latency = median(d);
+    $('#latTxt').textContent = `${Math.round(latency * 1000)} ms (from ${d.length} hits)`;
+    status(`Calibrated: ${Math.round(latency * 1000)} ms round trip.`);
+  }, (12 * 0.6 + 1) * 1000);
+}
+
+function onMicHit(t, peak) {
+  if (cal) {
+    const near = cal.times.reduce((b, x) => Math.abs(x - t) < Math.abs(b - t) ? x : b);
+    if (cal.times.indexOf(near) >= 4 && t - near > -0.1 && t - near < 0.35) cal.diffs.push(t - near);
+    return;
+  }
+  onHit(t - latency, peak);
+}
+
+// ───────────────────────── judging ─────────────────────────
+function onHit(t, peak) {                 // t = corrected hit time, audio clock
+  if (!playing) return;
+  let best = -1, bestErr = 1;
+  for (let n = Math.max(0, judgeFrom - 2); n < judgeFrom + 12; n++) {
+    if (judged.has(n)) continue;
+    const err = t - evTime(n);
+    if (Math.abs(err) <= 0.1 && Math.abs(err) < Math.abs(bestErr)) { best = n; bestErr = err; }
+  }
+  if (best < 0) { S.extra++; S.combo = 0; pop('extra hit', JC.miss); renderHud(); return; }
+  judge(best, bestErr, peak, t);
+}
+function judge(n, err, peak, t) {
+  const note = ev(n).note, ms = Math.abs(err * 1000);
+  const res = ms <= 25 ? 'perfect' : ms <= 50 ? 'good' : 'ok';
+  S[res]++; S.errs.push(err); S.combo++; S.best = Math.max(S.best, S.combo);
+  S.score += { perfect: 100, good: 60, ok: 25 }[res] * (1 + Math.min(S.combo, 50) / 50);
+  let accOK = null, extra = '';
+  if (peak != null && !note.grace) {
+    (note.acc ? S.accPeaks : S.tapPeaks).push(peak);
+    const tapMed = median(S.tapPeaks), accMed = median(S.accPeaks);
+    if (note.acc && tapMed) { accOK = peak >= tapMed * 1.6; extra = accOK ? ' ▲ accent' : ' · accent too soft'; }
+    if (!note.acc && accMed && peak > accMed * 0.8) { accOK = false; extra = ' · tap too loud'; }
+    if (accOK) S.score += 30;
+  }
+  if (note.grace) graceHit.set(n, t);
+  else if (graceHit.has(n - 1)) S.flams.push(t - graceHit.get(n - 1));
+  judged.set(n, { res, err, accOK });
+  const sign = err < 0 ? '−' : '+';
+  pop(`${res.toUpperCase()} ${res === 'perfect' ? '' : sign + Math.round(ms)}${extra}`, JC[res]);
+  renderHud();
+}
+function sweepMisses() {
+  while (playing && evTime(judgeFrom) < ac.currentTime - latency - 0.12) {
+    if (!judged.has(judgeFrom)) {
+      const note = ev(judgeFrom).note;
+      judged.set(judgeFrom, { res: 'miss' });
+      if (note.grace) { S.flat++; pop('flat flam', JC.miss); }
+      else { S.miss++; pop('MISS', JC.miss); }
+      S.combo = 0; renderHud();
+    }
+    judgeFrom++;
+  }
+}
+function pop(text, color) { lastJudge = { text, color, at: performance.now() }; }
+
+function renderHud() {
+  const total = S.perfect + S.good + S.ok + S.miss;
+  $('#score').textContent = Math.round(S.score);
+  $('#combo').textContent = S.combo; $('#best').textContent = S.best;
+  $('#acc').textContent = total ? Math.round(100 * (S.perfect + 0.7 * S.good + 0.3 * S.ok) / total) + '%' : '–';
+  $('#pgo').textContent = `${S.perfect} / ${S.good} / ${S.ok}`;
+  $('#miss').textContent = S.miss; $('#extra').textContent = S.extra; $('#flat').textContent = S.flat;
+  if (S.errs.length) {
+    const m = S.errs.reduce((a, b) => a + b, 0) / S.errs.length;
+    const sd = Math.sqrt(S.errs.reduce((a, b) => a + (b - m) ** 2, 0) / S.errs.length);
+    $('#off').textContent = `${Math.abs(Math.round(m * 1000))} ms ${m < 0 ? 'early' : 'late'}`;
+    $('#sd').textContent = `±${Math.round(sd * 1000)} ms`;
+  } else { $('#off').textContent = '–'; $('#sd').textContent = '–'; }
+  const a = median(S.accPeaks), tp = median(S.tapPeaks);
+  $('#gap').textContent = a && tp ? `${(20 * Math.log10(a / tp)).toFixed(1)} dB` : '–';
+  $('#flam').textContent = S.flams.length ? `${Math.round(median(S.flams) * 1000)} ms` : '–';
+}
+
+// ───────────────────────── motion model ─────────────────────────
+// Stick height 0 = on the pad, 1 = full stroke. Rise fast after a stroke to the NEXT stroke's height, hold, then fall.
+const HEIGHT = note => note.acc ? 1 : note.grace ? 0.12 : 0.4;
+const easeOut = x => 1 - (1 - x) ** 2, easeIn = x => x * x;
+function hand(handName, tRel) {
+  const len = rud.notes.length, c0 = Math.floor(tRel / spb / rud.beats);
+  let prev = null, next = null;
+  for (let n = Math.max(0, (c0 - 1) * len); n < (c0 + 3) * len; n++) {
+    const e = ev(n); if (e.note.hand !== handName) continue;
+    if (e.rel <= tRel) prev = e; else { next = e; break; }
+  }
+  if (!next) return { h: 0.2, prev };
+  const H = HEIGHT(next.note), tn = next.rel;
+  const tp = prev ? prev.rel : tn - 0.5, h0 = prev ? 0 : 0.2;
+  if (tRel < tp) return { h: h0, prev };
+  const gap = tn - tp, rise = Math.min(0.12, gap * 0.35), fall = Math.min(0.16, gap * 0.45), u = tRel - tp;
+  let h;
+  if (tRel > tn - fall) h = H * (1 - easeIn((tRel - (tn - fall)) / fall));
+  else if (u < rise) h = h0 + (H - h0) * easeOut(u / rise);
+  else h = H;
+  return { h, prev };
+}
+function impactColor(prev, handName) {
+  const j = prev && judged.get(prev.n);
+  return j ? JC[j.res] : HAND[handName];
+}
+
+// ───────────────────────── drawing ─────────────────────────
+function fit(cv) {
+  const r = cv.getBoundingClientRect(), d = devicePixelRatio || 1;
+  if (!r.width) return null;
+  const W = Math.round(r.width * d), H = Math.round(r.height * d);
+  if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; }
+  const g = cv.getContext('2d'); g.setTransform(d, 0, 0, d, 0, 0); g.clearRect(0, 0, r.width, r.height);
+  return [g, r.width, r.height];
+}
+function label(g, text, x = 12, y = 22) { g.fillStyle = '#8a8f98'; g.font = '600 12px system-ui'; g.textAlign = 'left'; g.fillText(text.toUpperCase(), x, y); }
+function stick(g, ax, ay, bx, by, w, color) {
+  g.lineCap = 'round'; g.strokeStyle = color; g.lineWidth = w;
+  g.beginPath(); g.moveTo(ax, ay); g.lineTo(bx, by); g.stroke();
+  g.fillStyle = '#f4f1e8'; g.beginPath(); g.arc(bx, by, w * 0.7, 0, 7); g.fill();
+}
+function fist(g, x, y, r, handName) {
+  g.fillStyle = HAND[handName]; g.globalAlpha *= 0.9; g.beginPath(); g.arc(x, y, r, 0, 7); g.fill(); g.globalAlpha = 1;
+  g.fillStyle = '#111'; g.font = `700 ${Math.round(r)}px system-ui`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(handName, x, y + 1); g.textBaseline = 'alphabetic';
+}
+function countIn(g, w, h, tRel) {
+  if (!playing || tRel >= 0) return;
+  const b = Math.ceil(-tRel / spb);
+  g.fillStyle = 'rgba(244,241,232,.85)'; g.font = `700 ${Math.round(Math.min(w, h) * 0.25)}px system-ui`; g.textAlign = 'center';
+  g.fillText(b, w / 2, h / 2);
+}
+function judgeText(g, x, y, size) {
+  if (!lastJudge) return;
+  const age = (performance.now() - lastJudge.at) / 700; if (age > 1) return;
+  g.globalAlpha = 1 - age; g.fillStyle = lastJudge.color; g.font = `700 ${size}px system-ui`; g.textAlign = 'center';
+  g.fillText(lastJudge.text, x, y - age * 14); g.globalAlpha = 1;
+}
+
+function drawSide(cv, tRel) {
+  const f = fit(cv); if (!f) return; const [g, w, h] = f;
+  const s = Math.min(w / 520, h / 300);
+  const px = w * 0.64, py = h * 0.66, padW = 160 * s;
+  g.strokeStyle = '#444a55'; g.lineWidth = 6 * s; g.beginPath(); g.moveTo(px, py); g.lineTo(px, h * 0.96); g.stroke();
+  g.beginPath(); g.moveTo(px - 50 * s, h * 0.96); g.lineTo(px + 50 * s, h * 0.96); g.stroke();
+  g.fillStyle = '#3a3f48'; g.fillRect(px - padW / 2, py, padW, 14 * s);
+  g.fillStyle = '#5a616e'; g.fillRect(px - padW / 2 + 10 * s, py - 3 * s, padW - 20 * s, 4 * s);
+  for (const H of ['L', 'R']) {
+    const back = H === 'L', dx = back ? -22 * s : 0, dy = back ? -12 * s : 0;
+    const fx = w * 0.2 + dx, fy = py - 34 * s + dy, cx = px - 20 * s + dx, cy = py - 3 * s + dy;
+    const a0 = Math.atan2(cy - fy, cx - fx), len = Math.hypot(cx - fx, cy - fy);
+    const { h: hh, prev } = hand(H, tRel), a = a0 - hh * 1.15;
+    const tip = [fx + Math.cos(a) * len, fy + Math.sin(a) * len], butt = [fx - Math.cos(a) * len * 0.28, fy - Math.sin(a) * len * 0.28];
+    if (!back) {  // height guides for the front hand
+      g.setLineDash([3, 5]); g.strokeStyle = '#555c68'; g.lineWidth = 1;
+      for (const [lv, name] of [[1, 'accent'], [0.4, 'tap']]) {
+        const aa = a0 - lv * 1.15, tx = fx + Math.cos(aa) * len, ty = fy + Math.sin(aa) * len;
+        g.beginPath(); g.moveTo(tx + 8 * s, ty); g.lineTo(tx + 40 * s, ty); g.stroke();
+        g.fillStyle = '#6b7280'; g.font = `${Math.round(11 * Math.max(s, 0.8))}px system-ui`; g.textAlign = 'left'; g.fillText(name, tx + 44 * s, ty + 4);
+      }
+      g.setLineDash([]);
+    }
+    if (prev && tRel - prev.rel < 0.09) {
+      const k = (tRel - prev.rel) / 0.09; g.strokeStyle = impactColor(prev, H); g.globalAlpha = 1 - k; g.lineWidth = 3;
+      g.beginPath(); g.ellipse(cx, cy, 10 * s + k * 30 * s, 4 * s + k * 8 * s, 0, 0, 7); g.stroke(); g.globalAlpha = 1;
+    }
+    g.globalAlpha = back ? 0.7 : 1;
+    stick(g, butt[0], butt[1], tip[0], tip[1], 7 * s, HAND[H]);
+    g.globalAlpha = back ? 0.7 : 1; fist(g, fx, fy, 17 * s, H); g.globalAlpha = 1;
+  }
+  label(g, 'Side view'); countIn(g, w, h, tRel);
+}
+
+function drawFront(cv, tRel) {
+  const f = fit(cv); if (!f) return; const [g, w, h] = f;
+  const cx = w / 2, cy = h * 0.44, rx = Math.min(w * 0.28, h * 0.5), ry = rx * 0.42, s = rx / 150;
+  g.fillStyle = '#2a2e36'; g.beginPath(); g.ellipse(cx, cy + 10 * s, rx, ry, 0, 0, 7); g.fill();
+  g.fillStyle = '#3a3f48'; g.beginPath(); g.ellipse(cx, cy, rx, ry, 0, 0, 7); g.fill();
+  g.fillStyle = '#4a505b'; g.beginPath(); g.ellipse(cx, cy, rx * 0.8, ry * 0.8, 0, 0, 7); g.fill();
+  const hs = [['L', -1], ['R', 1]].map(([H, sgn]) => ({ H, sgn, ...hand(H, tRel) })).sort((a, b) => a.h - b.h);
+  for (const { H, sgn, h: hh, prev } of hs) {
+    const contX = cx + sgn * rx * 0.2, contY = cy + ry * 0.15;
+    const hx = cx + sgn * rx * 1.3, hy = h * 0.82;
+    const tipX = contX + sgn * hh * rx * 0.08, tipY = contY - hh * rx * 0.85;
+    g.fillStyle = 'rgba(0,0,0,.35)'; g.beginPath(); g.ellipse(contX, contY, 6 * s + hh * 10 * s, 3 * s + hh * 4 * s, 0, 0, 7); g.fill();
+    if (prev && tRel - prev.rel < 0.09) {
+      const k = (tRel - prev.rel) / 0.09; g.strokeStyle = impactColor(prev, H); g.globalAlpha = 1 - k; g.lineWidth = 3;
+      g.beginPath(); g.ellipse(contX, contY, 8 * s + k * 34 * s, 3 * s + k * 14 * s, 0, 0, 7); g.stroke(); g.globalAlpha = 1;
+    }
+    const bx = hx + (hx - tipX) * 0.22, by = hy + (hy - tipY) * 0.22;
+    stick(g, bx, by, tipX, tipY, (7 + hh * 4) * s, HAND[H]);
+    fist(g, hx, hy, 20 * s, H);
+  }
+  label(g, 'Front view — as you see it'); countIn(g, w, h, tRel);
+}
+
+function drawLane(cv, tRel) {
+  const f = fit(cv); if (!f) return; const [g, w, h] = f;
+  const laneW = Math.min(150, (w - 40) / 2), x0 = w / 2 - laneW, hitY = h - 90, look = 1.8, pps = (hitY - 20) / look;
+  const xOf = H => H === 'L' ? x0 : x0 + laneW;
+  g.fillStyle = '#20242b'; g.fillRect(x0, 0, laneW * 2, h);
+  g.strokeStyle = '#2d323b'; g.lineWidth = 1; g.beginPath(); g.moveTo(w / 2, 0); g.lineTo(w / 2, h); g.stroke();
+  // beat lines
+  const b0 = Math.floor(tRel / spb) - 1;
+  for (let b = b0; (b * spb - tRel) < look + 0.2; b++) {
+    const y = hitY - (b * spb - tRel) * pps; if (y < 0 || y > h) continue;
+    const strong = ((b % rud.beats) + rud.beats) % rud.beats === 0;
+    g.strokeStyle = strong ? '#3c434e' : '#2a2f37'; g.lineWidth = strong ? 2 : 1;
+    g.beginPath(); g.moveTo(x0, y); g.lineTo(x0 + laneW * 2, y); g.stroke();
+  }
+  // hit line
+  const flash = lastJudge ? Math.max(0, 1 - (performance.now() - lastJudge.at) / 150) : 0;
+  g.fillStyle = `rgba(244,241,232,${0.25 + flash * 0.6})`; g.fillRect(x0, hitY - 2, laneW * 2, 4);
+  // notes
+  const len = rud.notes.length, c0 = Math.floor(tRel / spb / rud.beats);
+  for (let n = Math.max(0, (c0 - 1) * len); n < (c0 + 4) * len; n++) {
+    const e = ev(n), dt = e.rel - tRel; if (dt > look + 0.1) break;
+    const y = hitY - dt * pps; if (y > h + 20) continue;
+    const j = judged.get(n), col = HAND[e.note.hand], cx = xOf(e.note.hand) + laneW / 2;
+    g.globalAlpha = j && j.res === 'miss' ? 0.25 : dt < -0.05 ? 0.5 : 1;
+    if (e.note.grace) {
+      g.fillStyle = col; g.beginPath(); g.arc(cx, y, 6, 0, 7); g.fill();
+    } else {
+      const gw = laneW * (e.note.acc ? 0.9 : 0.55), gh = e.note.acc ? 22 : 12;
+      g.fillStyle = col; g.beginPath(); g.roundRect(cx - gw / 2, y - gh / 2, gw, gh, 6); g.fill();
+      if (e.note.acc) { g.fillStyle = '#111'; g.font = '700 16px system-ui'; g.textAlign = 'center'; g.fillText('>', cx, y + 6); }
+    }
+    if (j && j.res !== 'miss') { g.strokeStyle = JC[j.res]; g.lineWidth = 3; g.beginPath(); g.arc(cx, y, e.note.acc ? 18 : 12, 0, 7); g.stroke(); }
+    g.globalAlpha = 1;
+  }
+  g.font = '700 20px system-ui'; g.textAlign = 'center';
+  for (const H of ['L', 'R']) { g.fillStyle = HAND[H]; g.fillText(H, xOf(H) + laneW / 2, hitY + 40); }
+  judgeText(g, w / 2, hitY - 40, 22);
+  label(g, rud.name); countIn(g, w, h, tRel);
+}
+
+function drawStrip(cv, tRel) {
+  const f = fit(cv); if (!f) return; const [g, w, h] = f;
+  const ppb = 120, playX = w * 0.25, lineY = h * 0.5, beatNow = tRel / spb;
+  g.strokeStyle = '#3a3f48'; g.lineWidth = 1; g.beginPath(); g.moveTo(0, lineY); g.lineTo(w, lineY); g.stroke();
+  const bFirst = Math.floor(beatNow - playX / ppb) - 1;
+  for (let b = bFirst; (b - beatNow) * ppb + playX < w + 10; b++) {
+    const x = playX + (b - beatNow) * ppb, strong = ((b % rud.beats) + rud.beats) % rud.beats === 0;
+    g.strokeStyle = strong ? '#555c68' : '#2d323b'; g.lineWidth = strong ? 2 : 1;
+    g.beginPath(); g.moveTo(x, lineY - 34); g.lineTo(x, lineY + 34); g.stroke();
+  }
+  const len = rud.notes.length, c0 = Math.floor(beatNow / rud.beats);
+  for (let n = Math.max(0, (c0 - 2) * len); n < (c0 + 5) * len; n++) {
+    const e = ev(n), x = playX + (e.rel / spb - beatNow) * ppb; if (x < -20) continue; if (x > w + 20) break;
+    const j = judged.get(n), past = x < playX - 4, col = HAND[e.note.hand];
+    g.globalAlpha = past ? (j && j.res === 'miss' ? 0.2 : 0.45) : 1;
+    const r = e.note.grace ? 4 : 7;
+    const hx = e.note.grace ? x - 8 : x;
+    g.fillStyle = '#e8e6e1'; g.beginPath(); g.ellipse(hx, lineY, r * 1.25, r, -0.35, 0, 7); g.fill();
+    g.strokeStyle = '#e8e6e1'; g.lineWidth = e.note.grace ? 1 : 1.5; g.beginPath(); g.moveTo(hx + r * 1.1, lineY); g.lineTo(hx + r * 1.1, lineY - (e.note.grace ? 22 : 34)); g.stroke();
+    if (e.note.acc) { g.fillStyle = '#e8e6e1'; g.font = '700 16px system-ui'; g.textAlign = 'center'; g.fillText('>', x, lineY - 42); }
+    g.fillStyle = col; g.font = `700 ${e.note.grace ? 12 : 18}px system-ui`; g.textAlign = 'center';
+    g.fillText(e.note.grace ? e.note.hand.toLowerCase() : e.note.hand, hx, lineY + 34);
+    if (j) { g.fillStyle = JC[j.res]; g.beginPath(); g.arc(hx, lineY + 50, 4, 0, 7); g.fill(); }
+    g.globalAlpha = 1;
+  }
+  g.strokeStyle = 'rgba(244,241,232,.8)'; g.lineWidth = 2; g.beginPath(); g.moveTo(playX, 10); g.lineTo(playX, h - 10); g.stroke();
+  judgeText(g, playX + 180, 30, 18);
+  label(g, rud.name, w - 260, 22);
+}
+
+function frame() {
+  if (playing) { viewRel = ac.currentTime - outLat - T0; sweepMisses(); }
+  $('#stage').classList.contains('vA') ? drawLane($('#lane'), viewRel) : drawStrip($('#strip'), viewRel);
+  drawSide($('#side'), viewRel); drawFront($('#front'), viewRel);
+  requestAnimationFrame(frame);
+}
+
+// ───────────────────────── variants + controls ─────────────────────────
+const VARIANTS = [['A', 'Lane leads'], ['B', 'Hands lead']];
+function setVariant(k) {
+  const i = Math.max(0, VARIANTS.findIndex(v => v[0] === k)), [key, name] = VARIANTS[i];
+  $('#stage').className = 'v' + key; $('#vLabel').textContent = `${key} — ${name}`;
+  const u = new URL(location); u.searchParams.set('variant', key); history.replaceState(null, '', u);
+}
+function cycle(d) {
+  const i = VARIANTS.findIndex(v => 'v' + v[0] === $('#stage').className);
+  setVariant(VARIANTS[(i + d + VARIANTS.length) % VARIANTS.length][0]);
+}
+
+for (const [k, r] of Object.entries(RUDIMENTS)) $('#rud').add(new Option(r.name, k));
+$('#rud').onchange = e => { stop(); rud = RUDIMENTS[e.target.value]; viewRel = -1; resetStats(); e.target.blur(); };
+$('#play').onclick = e => { playing ? stop() : start(); e.target.blur(); };
+$('#bpm').oninput = e => setBpm(e.target.value);
+$('#bpmNum').onchange = e => setBpm(e.target.value);
+$('#metro').onclick = e => { metroOn = !metroOn; e.target.classList.toggle('on', metroOn); e.target.blur(); };
+$('#demo').onclick = e => { demoOn = !demoOn; e.target.classList.toggle('on', demoOn); e.target.blur(); };
+$('#mic').onclick = e => { e.target.blur(); if (!micNode) enableMic().catch(err => status('Mic failed: ' + err.message)); };
+$('#cal').onclick = e => { e.target.blur(); calibrate(); };
+$('#sens').oninput = e => setSens(e.target.value);
+$('#prevV').onclick = () => cycle(-1); $('#nextV').onclick = () => cycle(1);
+addEventListener('keydown', e => {
+  const tag = document.activeElement && document.activeElement.tagName;
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+  if (e.key === 'ArrowLeft') cycle(-1);
+  else if (e.key === 'ArrowRight') cycle(1);
+  else if (e.key === 'p' || e.key === 'P') playing ? stop() : start();
+  else if (e.code === 'Space') { e.preventDefault(); if (playing && !e.repeat) onHit(ac.currentTime - outLat, null); }
+});
+
+setVariant(new URLSearchParams(location.search).get('variant') || 'A');
+setSens(50); resetStats(); requestAnimationFrame(frame);
+</script>
+</body>
+</html>
